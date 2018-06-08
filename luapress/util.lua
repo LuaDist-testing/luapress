@@ -102,12 +102,14 @@ local function load_markdowns(directory, config)
             end
 
             -- Excerpt
-            local start, finish = s:find('--MORE--')
+            local start, _ = s:find('--MORE--')
             if start then
-                s = s:sub(0, start - 1)
-                out.excerpt = markdown(s)
+                -- Extract the excerpt
+                out.excerpt = markdown(s:sub(0, start - 1))
+                -- Replace the --MORE--
+                s = s:gsub('%-%-MORE%-%-', '<a id="more">&nbsp;</a>')
             end
-            s = s:gsub('--MORE--', '')
+
             out.content = markdown(s)
 
             -- Date set?
@@ -148,21 +150,21 @@ local function load_templates(directory)
     templates.rss = {
         time = 0,
         content = [[
-    <?xml version="1.0" encoding="utf-8"?>
-    <rss version="2.0">
-        <channel>
-            <title><?=self:get('title') ?></title>
-            <link><?=self:get('url') ?></link>
-    <? for k, post in pairs(self:get('posts')) do ?>
-            <item>
-                <title><?=post.title ?></title>
-                <description><?=post.excerpt ?></description>
-                <link><?=self:get('url') ?>/posts/<?=post.link ?></link>
-                <guid><?=self:get('url') ?>/posts/<?=post.link ?></guid>
-            </item>
-    <? end ?>
-        </channel>
-    </rss>
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+    <channel>
+        <title><?=self:get('title') ?></title>
+        <link><?=self:get('url') ?></link>
+<? for k, post in pairs(self:get('posts')) do ?>
+        <item>
+            <title><?=post.title ?></title>
+            <description><? if post.excerpt then ?><?=post.excerpt ?><? else ?><?=post.content ?><? end ?></description>
+            <link><?=self:get('url') ?>/posts/<?=post.link ?></link>
+            <guid><?=self:get('url') ?>/posts/<?=post.link ?></guid>
+        </item>
+<? end ?>
+    </channel>
+</rss>
     ]]}
 
     return templates
