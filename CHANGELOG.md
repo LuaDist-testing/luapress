@@ -1,6 +1,12 @@
+# v3.4
+
++ Support for newer Lua versions
++ Support for non English languages
+
 # v3.3.1
 
 + Fix images and emails in markdown
++ Make cache work with multiple envs
 
 # v3.3
 
