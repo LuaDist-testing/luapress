@@ -16,39 +16,45 @@ local markdown = require('luapress.lib.markdown')
 local template = require('luapress.template')
 
 
+---
 -- Writes a header/footer wrapped HTML file depending on the modification time
-local function write_html(destination, object, object_type, templates, config)
-    -- Check modification time on post & destination files
+--
+-- @param destination  Path and name of the output file
+-- @param object  Descriptor of page or post
+-- @param templates  Table with templates.
+--
+local function write_html(destination, object, templates)
+    -- If the output file exists and is not older than the input file, skip.
     local attributes = lfs.attributes(destination)
-
-    if not (config.cache and attributes and object.modification) or object.modification > attributes.modification then
-        local output = template:process(templates.header, templates[object_type], templates.footer)
-
-        -- Write the file
-        f, err = io.open(destination, 'w')
-        if not f then error(err) end
-        local result, err = f:write(output)
-        if not result then error(err) end
-        f:close()
-
-        if config.print then print('\t' .. object.title) end
+    if config.cache and attributes and object.modification and object.modification <= attributes.modification then
+    return
     end
+
+    -- Write the file
+    if config.print then print('\t' .. object.title) end
+    local output = template:process(templates.header, templates[object.template], templates.footer)
+    f, err = io.open(destination, 'w')
+    if not f then error(err) end
+    local result, err = f:write(output)
+    if not result then error(err) end
+    f:close()
+
 end
 
 
 -- Returns the destination file given our config
-local function ensure_destination(directory, object_type, link, config)
+local function ensure_destination(item)
     if config.link_dirs then
-        lfs.mkdir(directory .. '/' .. config.build_dir .. '/' .. object_type .. '/' .. link)
-        return config.build_dir .. '/' .. object_type .. '/' .. link .. '/index.html'
+        lfs.mkdir(config.root .. '/' .. config.build_dir .. '/' .. item.directory .. '/' .. item.link)
+        return config.build_dir .. '/' .. item.directory .. '/' .. item.link .. '/index.html'
     end
 
-    return config.build_dir .. '/' .. object_type .. '/' .. link
+    return config.build_dir .. '/' .. item.directory .. '/' .. item.link
 end
 
 
 -- Builds link list based on the currently active page
-local function page_links(pages, active, config)
+local function page_links(pages, active)
     local output = ''
 
     for k, page in pairs(pages) do
@@ -65,75 +71,136 @@ local function page_links(pages, active, config)
 end
 
 
--- Load markdown files in a directory
-local function load_markdowns(directory, config)
-    local outs = {}
+---
+-- Process calls to plugins: $! plugin arg, arg... !$
+--
+-- @param s  Content string
+-- @param out  Table describing the page or post
+-- @result  Processed string
+--
+local function process_plugins(s, out)
+    local pos = 1
+    while pos < #s do
+    local a, b = s:find('%$!.-!%$', pos)
+    if not a then break end
+    local s2 = s:sub(a + 2, b - 2)
+    local pl, arg = s2:match('^ *(%w+) *(.*)$')
+    if not pl then
+        error('Empty plugin call in ' .. out.source)
+    end
 
-    for file in lfs.dir(directory) do
+    -- convert args to a table
+    if #arg > 0 then
+        arg = loadstring("return { " .. arg .. "}")()
+    else
+        arg = {}
+    end
+
+    -- load the plugin either from the site directory or the install directory
+    local path = 'plugins/' .. pl
+    if not lfs.attributes(path .. '/init.lua', "mode") then
+        path = config.base .. '/plugins/' .. pl
+    end
+
+    local plugin = loadfile(path .. '/init.lua')()
+
+    -- execute the plugin, replace markup by result
+    arg.plugin_path = path
+    local res = plugin(out, arg)
+    s = s:sub(1, a - 1) .. res .. s:sub(b + 1)
+    pos = a + #res
+    end
+
+    return s
+end
+
+
+---
+-- Load all markdown files in a directory and preprocess them
+-- into HTML.
+--
+-- @param directory  Subdirectory of config.root (pages or posts)
+-- @param template  'page' or 'post'
+-- @return  Table of items
+--
+local function load_markdowns(directory, template)
+    local items = {}
+
+    for file in lfs.dir(config.root .. "/" .. directory) do
         if file:sub(-3) == '.md' then
-            local title = file:sub(0, -4)
-            file = directory .. '/' .. file
-            local attributes = lfs.attributes(file)
+            local fname = file:sub(0, -4)
+            local file2 = config.root .. "/" .. directory .. '/' .. file
+            local attributes = lfs.attributes(file2)
 
-            -- Work out title
-            local link = title:gsub(' ', '_'):gsub('[^_aA-zZ0-9]', '')
-            if not config.link_dirs then link = link .. '.html' end
+            -- Work out link
+            local link = fname:gsub(' ', '_'):gsub('[^_aA-zZ0-9]', '')
+            if not config.link_dirs then
+                link = link .. '.html'
+            end
 
             -- Get basic attributes
-            local out = {
-                link = link,
-                title = title,
+            local item = {
+                source = directory .. '/' .. file, -- for error messages
+                link = link, -- basename of output file
+                name = fname, -- same as title, but is not overwritten
+                title = fname, -- displayed page name
+                directory = directory, -- relative to config.root
                 content = '',
-                time = attributes.modification,
-                modification = attributes.modification -- stored separately as time can be overwritten w/$time=
+                time = attributes.modification, -- to check build requirement
+                modification = attributes.modification, -- stored separately as time can be overwritten w/$time=
+                template = template, -- what template will be used (type of item)
             }
 
             -- Now read the file
-            local f, err = io.open(file, 'r')
-            if not f then error(err) end
-            local s, err = f:read('*a')
-            if not s then error(err) end
+            local f = assert(io.open(file2, 'r'))
+            local s = assert(f:read('*a'))
 
             -- Set $=key's
             s = s:gsub('%$=url', config.url)
 
-            -- Get $key=value's
-            for k, v, c, d in s:gmatch('%$([%w]+)=(.-)\n') do
-                out[k] = v
-                s = s:gsub('%$[%w]+=.-\n', '')
+            -- Get $key=value's (and remove from string)
+            for k, v in s:gmatch('%$([%w]+)=(.-)\n') do
+                item[k] = v
             end
+            s = s:gsub('%$[%w]+=.-\n', '')
+
+            -- Hande plugins
+            s = process_plugins(s, item)
 
             -- Excerpt
-            local start, _ = s:find('--MORE--')
+            local start, _ = s:find('--MORE--', 1, true)
             if start then
                 -- Extract the excerpt
-                out.excerpt = markdown(s:sub(0, start - 1))
+                item.excerpt = markdown(s:sub(0, start - 1))
                 -- Replace the --MORE--
                 local sep = config.more_separator or ''
                 s = s:gsub('%-%-MORE%-%-', '<a id="more">' .. sep .. '</a>')
             end
 
-            out.content = markdown(s)
+            item.content = markdown(s)
 
             -- Date set?
-            if out.date then
-                local _, _, d, m, y = out.date:find('(%d+)%/(%d+)%/(%d+)')
-                out.time = os.time({day = d, month = m, year = y})
+            if item.date then
+                local _, _, d, m, y = item.date:find('(%d+)%/(%d+)%/(%d+)')
+                item.time = os.time({day = d, month = m, year = y})
             end
 
-            -- Insert to outs
-            table.insert(outs, out)
-            if config.print then print('\t' .. out.title) end
+            -- Insert to items
+        items[#items + 1] = item
+            if config.print then print('\t' .. item.title) end
         end
     end
 
-    return outs
+    return items
 end
 
 
--- Loads lhtml templates in a directory
-local function load_templates(directory)
+---
+-- Loads all .lhtml files from a template directory
+--
+local function load_templates()
     local templates = {}
+    local directory = config.root .. '/templates/' .. config.template
 
     for file in lfs.dir(directory) do
         if file:sub(-5) == 'lhtml' then
@@ -149,32 +216,38 @@ local function load_templates(directory)
         end
     end
 
-    -- RSS template
-    templates.rss = {
-        time = 0,
-        content = [[
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0">
-    <channel>
-        <title><?=self:get('title') ?></title>
-        <link><?=self:get('url') ?></link>
-<? for k, post in pairs(self:get('posts')) do ?>
-        <item>
-            <title><?=post.title ?></title>
-            <description><? if post.excerpt then ?><?=post.excerpt ?><? else ?><?=post.content ?><? end ?></description>
-            <link><?=self:get('url') ?>/posts/<?=post.link ?></link>
-            <guid><?=self:get('url') ?>/posts/<?=post.link ?></guid>
-        </item>
-<? end ?>
-    </channel>
-</rss>
-    ]]}
-
     return templates
 end
 
 
+---
+-- Copies a single file
+--
+local function copy_file(source, destination)
+    -- Open current file
+    local f, err = io.open(source, 'r')
+    if not f then error(err) end
+    -- Read file
+    local s, err = f:read('*a')
+    if not s then error(err) end
+    f:close()
+
+    -- Open new file for creation
+    local f, err = io.open(destination, 'w')
+    assert(f, "Failed to write to " .. destination)
+
+    -- Write contents
+    local result, err = f:write(s)
+    if not result then error(err) end
+    f:close()
+
+    print('\t' .. destination)
+end
+
+
+---
 -- Recursively duplicates a directory
+--
 local function copy_dir(directory, destination)
     for file in lfs.dir(directory) do
         if file ~= '.' and file ~= '..' then
@@ -193,22 +266,7 @@ local function copy_dir(directory, destination)
             if attributes.mode and attributes.mode == 'file' then
                 local dest_attributes = lfs.attributes(destination .. file)
                 if not dest_attributes or attributes.modification > dest_attributes.modification then
-                    -- Open current file
-                    local f, err = io.open(directory .. file, 'r')
-                    if not f then error(err) end
-                    -- Read file
-                    local s, err = f:read('*a')
-                    if not s then error(err) end
-                    f:close()
-
-                    -- Open new file for creation
-                    local f, err = io.open(destination .. file, 'w')
-                    -- Write contents
-                    local result, err = f:write(s)
-                    if not result then error(err) end
-                    f:close()
-
-                    print('\t' .. destination .. file)
+                    copy_file(directory .. file, destination .. file)
                 end
             end
         end
@@ -216,12 +274,71 @@ local function copy_dir(directory, destination)
 end
 
 
+local function process_xref_1(fname, s, idx)
+    local pos = 1
+
+    while pos < #s do
+    local a, b = s:find('%[=(.-)%]', pos)
+    if not a then break end
+    local ref = s:sub(a + 2, b - 1)
+    local res = idx[ref]
+    if not res then
+        print(string.format("%s: Error: cross reference to %s not found.",
+        fname, ref))
+        res = "INVALID XREF"
+    else
+        res = string.format('<a href="%s/%s/%s">%s</a>',
+        config.url, res.directory, res.link, res.title)
+    end
+
+    s = s:sub(1, a - 1) .. res .. s:sub(b + 1)
+    pos = a + #res
+    end
+
+    return s
+end
+
+---
+-- Replace all cross references by proper hyperlinks.  An xref has this format:
+-- [=TYPE/NAME], where TYPE is either page or post, and NAME is the file name
+-- (without the .md suffix).  The link text is the title of the target
+-- page.
+--
+-- @param pages  Array of all pages
+-- @param posts  Array of all posts
+--
+local function process_xref(pages, posts)
+
+    -- create an index (name to item)
+    local idx = {}
+    for _, item in ipairs(pages) do
+    idx['pages/' .. item.name] = item
+    end
+    for _, item in ipairs(posts) do
+    idx['posts/' .. item.name] = item
+    end
+
+    -- check all items for xrefs
+    for _, item in ipairs(pages) do
+    item.content = process_xref_1(item.source, item.content, idx)
+    if item.excerpt then
+        item.excerpt = process_xref_1(item.source, item.excerpt, idx)
+    end
+    end
+    for _, item in ipairs(posts) do
+    item.content = process_xref_1(item.source, item.content, idx)
+    end
+
+end
+
 -- Export
 return {
+    copy_file = copy_file,
     copy_dir = copy_dir,
     load_templates = load_templates,
     load_markdowns = load_markdowns,
     page_links = page_links,
     ensure_destination = ensure_destination,
-    write_html = write_html
+    write_html = write_html,
+    process_xref = process_xref,
 }

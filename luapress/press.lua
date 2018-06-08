@@ -5,7 +5,7 @@
 local os = os
 local io = io
 local print = print
-local pairs = pairs
+local ipairs = ipairs
 local tonumber = tonumber
 local table = table
 
@@ -15,83 +15,16 @@ local util = require('luapress.util')
 local template = require('luapress.template')
 
 
-local function build(directory, config)
-    -- Setup our global template values
-    template:set('title', config.title)
-    template:set('url', config.url)
-
-    -- Load the relevant template files
-    if config.print then print('[1] Loading templates') end
-    local templates = util.load_templates(directory .. '/templates/' .. config.template)
-
-    -- Load the posts
-    if config.print then print('[2] Loading posts') end
-    local posts = util.load_markdowns(directory .. '/posts', config)
-    -- Sort by time
-    table.sort(posts, function(a, b)
-        return tonumber(a.time) > tonumber(b.time)
-    end)
-
-    -- Load the pages
-    if config.print then print('[3] Loading pages') end
-    local pages = util.load_markdowns(directory .. '/pages', config)
-    -- Sort by order
-    table.sort(pages, function(a, b)
-        return (tonumber(a.order) or 0) < (tonumber(b.order) or 0)
-    end)
-
-    -- Build the archive page (all posts)
-    if #posts > 0 then
-        template:set('posts', posts)
-        template:set('page', {title = 'Archive'})
-        table.insert(pages, {
-            link = 'Archive' .. (config.link_dirs and '' or '.html'),
-            title = 'Archive',
-            time = os.time(),
-            content = template:process(templates.archive)
-        })
-    end
-
-    -- Build the posts
-    if config.print then print('[4] Building ' .. (config.cache and 'new ' or '') .. 'posts') end
-    template:set('single', true)
-    -- Page links shared between all posts
-    template:set('page_links', util.page_links(pages, nil, config))
-
-    for _, post in pairs(posts) do
-        local dest_file = util.ensure_destination(directory, 'posts', post.link, config)
-
-        -- Attach the post & output the file
-        template:set('post', post)
-        util.write_html(dest_file, post, 'post', templates, config)
-    end
-
-    -- Build the pages
-    if config.print then print('[5] Building ' .. (config.cache and 'new ' or '') .. 'pages') end
-    template:set('single', false)
-
-    for _, page in pairs(pages) do
-        local dest_file = util.ensure_destination(directory, 'pages', page.link, config)
-
-        -- We're a page, so change up page_links
-        template:set('page_links', util.page_links(pages, page.link, config))
-        template:set('page', page)
-
-        -- Output the file
-        util.write_html(dest_file, page, 'page', templates, config)
-    end
-    template:set('page', false)
-
-    -- Build the indexes
-    if config.print then print('[6] Building index pages') end
-    -- Page links shared between all indexes
-    template:set('page_links', util.page_links(pages, nil, config))
-
-    -- Iterate to generate indexes
+---
+-- Generate one or more index files for all posts, or use
+-- one of the pages if no posts are available.
+--
+local function build_index(pages, posts, templates)
     local index = 1
     local count = 0
     local output = ''
-    for k, post in pairs(posts) do
+
+    for k, post in ipairs(posts) do
         -- Add post to output, increase count
         template:set('post', post)
         output = output .. template:process(templates.post)
@@ -102,9 +35,9 @@ local function build(directory, config)
             -- Pick index file, open
             local f, err
             if index == 1 then
-                f, err = io.open(directory .. '/' .. config.build_dir .. '/index.html', 'w')
+                f, err = io.open(config.root .. '/' .. config.build_dir .. '/index.html', 'w')
             else
-                f, err = io.open(directory .. '/' .. config.build_dir .. '/index' .. index .. '.html', 'w')
+                f, err = io.open(config.root .. '/' .. config.build_dir .. '/index' .. index .. '.html', 'w')
             end
             if not f then error(err) end
 
@@ -144,69 +77,207 @@ local function build(directory, config)
         end
     end
 
-    -- Build the RSS of last 10 posts
-    if config.print then print('[7] Building RSS') end
-    local rssposts = {}
-    for k, post in pairs(posts) do
-        if k <= 10 then
-            if post.excerpt then post.excerpt = post.excerpt:gsub('<[^>]+/?>', ' '):gsub('</[^>]+>', ' '):gsub('\n', '') end
-            post.title = post.title:gsub('%p', '')
-            table.insert(rssposts, post)
-        else
+    -- No posts at all, but at least one page?  Have an index.html anyway.
+    if #posts == 0 and #pages > 0 then
+    local idxpage
+    if config.index then
+        -- use specified page
+        for _, page in ipairs(pages) do
+        if page.name == config.index then
+            idxpage = page
             break
         end
+        end
+    else
+        -- use first page
+        idxpage = pages[1]
     end
-    if #rssposts > 0 then
-        template:set('posts', rssposts)
-        local rss = template:process(templates.rss.content)
-        local f, err = io.open(directory .. '/' .. config.build_dir .. '/index.xml', 'w')
-        if not f then error(err) end
-        local result, err = f:write(rss)
-        if not result then error(err) end
+
+    -- The "copy file" part of util.copy_dir could be refactored into
+    -- a separate function and used here.
+    if idxpage then
+        -- Work out built file location
+        local bdir = config.root .. '/' .. config.build_dir .. '/'
+        local filename = bdir .. "pages/" .. idxpage.link
+        if config.link_dirs then
+            filename = filename .. '/index.html'
+        end
+
+        util.copy_file(filename, bdir .. 'index.html')
     end
+    end
+end
+
+
+---
+-- If any posts are available, build a RSS file
+--
+local function build_rss(posts, templates)
+    if #posts == 0 then
+        return
+    end
+
+    if config.print then print('[7] Building RSS') end
+    local rssposts = {}
+
+    for k, post in ipairs(posts) do
+        if k > 10 then
+            break
+        end
+
+        if post.excerpt then
+            post.excerpt = post.excerpt:gsub('<[^>]+/?>', ' '):gsub('</[^>]+>', ' '):gsub('\n', '')
+        end
+
+        post.title = post.title:gsub('%p', '')
+        rssposts[#rssposts + 1] = post
+    end
+
+    template:set('posts', rssposts)
+    local rss = template:process(templates.rss)
+    local f, err = io.open(config.root .. '/' .. config.build_dir .. '/index.xml', 'w')
+    if not f then error(err) end
+    local result, err = f:write(rss)
+    if not result then error(err) end
+    f:close()
+end
+
+
+---
+-- This is the main function to generate the static website.
+--
+local function build()
+    -- Setup our global template values
+    template:set('title', config.title)
+    template:set('url', config.url)
+
+    -- Load template files
+    if config.print then print('[1] Loading templates') end
+    local templates = util.load_templates()
+
+    -- Load the posts and sort by timestamp
+    if config.print then print('[2] Loading posts') end
+    local posts = util.load_markdowns('posts', 'post')
+    table.sort(posts, function(a, b)
+        return tonumber(a.time) > tonumber(b.time)
+    end)
+
+    -- Load the pages and sort by order
+    if config.print then print('[3] Loading pages') end
+    local pages = util.load_markdowns('pages', 'page')
+    table.sort(pages, function(a, b)
+        return (tonumber(a.order) or 0) < (tonumber(b.order) or 0)
+    end)
+
+    -- Build the archive page (all posts) if at least one post exists
+    if #posts > 0 then
+        template:set('posts', posts)
+        template:set('page', {title = 'Archive'})
+        table.insert(pages, {
+            link = 'Archive' .. (config.link_dirs and '' or '.html'),
+            title = 'Archive',
+            time = os.time(),
+            content = template:process(templates.archive),
+            template = 'page',
+            directory = 'pages',
+            name = 'archive',
+        })
+    end
+
+    -- Process cross references
+    util.process_xref(pages, posts)
+
+    -- Tell the header template we have posts (ie show RSS)
+    template:set('have_posts', #posts > 0)
+
+    -- Build the posts
+    if config.print then print('[4] Building ' .. (config.cache and 'new ' or '') .. 'posts') end
+    template:set('single', true)
+    -- Page links shared between all posts
+    template:set('page_links', util.page_links(pages, nil))
+
+    for _, post in ipairs(posts) do
+        local dest_file = util.ensure_destination(post)
+
+        -- Attach the post & output the file
+        template:set('post', post)
+        util.write_html(dest_file, post, templates)
+    end
+
+    -- Build the pages
+    if config.print then print('[5] Building ' .. (config.cache and 'new ' or '') .. 'pages') end
+    template:set('single', false)
+
+    for _, page in ipairs(pages) do
+        local dest_file = util.ensure_destination(page)
+
+        -- We're a page, so change up page_links
+        template:set('page_links', util.page_links(pages, page.link))
+        template:set('page', page)
+
+        -- Output the file
+        util.write_html(dest_file, page, templates)
+    end
+    template:set('page', false)
+
+    -- Build the indexes
+    if config.print then print('[6] Building index pages') end
+    -- Page links shared between all indexes
+    template:set('page_links', util.page_links(pages, nil))
+
+    -- Iterate to generate indexes
+    build_index(pages, posts, templates)
+
+    -- Build the RSS of last 10 posts
+    build_rss(posts, templates)
 
     -- Copy inc directories
     if config.print then print('[8] Copying inc files') end
-    util.copy_dir(directory .. '/inc/', directory .. '/' .. config.build_dir .. '/inc/')
+    util.copy_dir(config.root .. '/inc/', config.root .. '/' .. config.build_dir .. '/inc/')
     util.copy_dir(
-        directory .. '/templates/' .. config.template .. '/inc/',
-        directory .. '/' .. config.build_dir .. '/inc/template/'
+        config.root .. '/templates/' .. config.template .. '/inc/',
+        config.root .. '/' .. config.build_dir .. '/inc/template/'
     )
 
     return true
 end
 
 
-local function make_build(root, directory)
-    -- Make main directory
-    lfs.mkdir(root .. '/' .. directory)
-
-    -- Make sub directories
+---
+-- Prepare the build directory with required subdirectories
+--
+local function make_build()
     for _, sub_directory in ipairs({
-        'posts', 'pages', 'inc', 'inc/template'
+        '', 'posts', 'pages', 'inc', 'inc/template'
     }) do
-        lfs.mkdir(root .. '/' .. directory .. '/' .. sub_directory)
+        lfs.mkdir(config.root .. '/' .. config.build_dir
+        .. '/' .. sub_directory)
     end
 end
 
 
+---
+-- Create a new site
+--
+-- @param root  directory where to set up the files
+-- @param url  relative URL of the site, i.e. https://host.com/URL
+--
 local function make_skeleton(root, url)
     -- Make directories
     for _, directory in ipairs({
-        'posts', 'pages', 'inc',
-        'templates', 'templates/default', 'templates/default/inc'
+        '', 'posts', 'pages', 'inc', 'templates', 'templates/default',
     }) do
         lfs.mkdir(root .. '/' .. directory)
     end
 
-    -- Copy/write the default template
-    local templates = require('luapress.default_template')
-    for file, contents in pairs(templates) do
-        local f, err = io.open(root .. '/templates/default/' .. file, 'w')
-        if err then return false, err end
-        local status, err = f:write(contents)
-        if err then return false, err end
-        f:close()
+    -- Copy the default template
+    local base = string.gsub(arg[0], "/[^/]-/[^/]-$", "")
+    util.copy_dir(base .. '/template/', root .. '/templates/default/')
+
+    local attributes = lfs.attributes(root .. '/config.lua')
+    if attributes then
+        print('config.lua found, not writing new config...')
+        return
     end
 
     -- Basic config template
@@ -224,7 +295,9 @@ local config = {
     -- Link directories not files
     link_dirs = true,
     -- Separator to put inside <a id="more"></a> link
-    more_separator = ''
+    more_separator = '',
+    -- Select a page as the landing page (optional, no path or suffix)
+    index = nil,
 }
 
 return config

@@ -1,17 +1,17 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = 'Luapress'
-version = '2.0.4-1'
+version = '2.1.0-0'
 
 -- LuaDist source
 source = {
-  tag = "2.0.4-1",
+  tag = "2.1.0-0",
   url = "git://github.com/LuaDist-testing/luapress.git"
 }
 -- Original source
 -- source = {
 --     url = 'git://github.com/Fizzadar/luapress.git',
---     tag = 'v2.0.4'
+--     tag = 'v2.1.0'
 -- }
 
 description = {
@@ -36,11 +36,14 @@ build = {
             ['luapress.config'] = 'luapress/config.lua',
             ['luapress.template'] = 'luapress/template.lua',
             ['luapress.util'] = 'luapress/util.lua',
-            ['luapress.default_template'] = 'luapress/default_template.lua',
             ['luapress.lib.markdown'] = 'luapress/lib/markdown.lua'
         },
         bin = {
             'bin/luapress'
         }
-    }
+    },
+    copy_directories = {
+        'plugins',
+	'template',
+    },
 }
