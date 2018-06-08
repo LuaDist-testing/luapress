@@ -12,8 +12,27 @@ local string = string
 
 local lfs = require('lfs')
 
-local markdown = require('luapress.lib.markdown')
 local template = require('luapress.template')
+local markdown = require('luapress.lib.markdown')
+local cli = require('luapress.lib.cli')
+
+
+--
+-- Escapes content for use as RSS text
+--
+-- @param content  Content to return escaped
+--
+local function escape_for_rss(content)
+    return content
+        -- Remove <script> and contents
+        :gsub('<script[^>]+>.-</script>', '')
+        -- Remove tags and self-closing
+        :gsub('<[^>]+/?>', ' ')
+        -- Remove close tags
+        :gsub('</[^>]+>', ' ')
+        -- Remove newlines
+        :gsub('\n', '')
+end
 
 
 ---
@@ -34,9 +53,9 @@ local function write_html(destination, object, templates)
     if config.print then print('\t' .. object.title) end
     local output = template:process(templates.header, templates[object.template], templates.footer)
     f, err = io.open(destination, 'w')
-    if not f then error(err) end
+    if not f then cli.error(err) end
     local result, err = f:write(output)
-    if not result then error(err) end
+    if not result then cli.error(err) end
     f:close()
 
 end
@@ -78,15 +97,15 @@ end
 -- @param out  Table describing the page or post
 -- @result  Processed string
 --
-local function process_plugins(s, out)
+local function _process_plugins(s, out)
     local pos = 1
     while pos < #s do
-    local a, b = s:find('%$!.-!%$', pos)
+    local a, b = s:find('\n%$!.-!%$', pos)
     if not a then break end
-    local s2 = s:sub(a + 2, b - 2)
+    local s2 = s:sub(a + 3, b - 2)
     local pl, arg = s2:match('^ *(%w+) *(.*)$')
     if not pl then
-        error('Empty plugin call in ' .. out.source)
+        cli.error('Empty plugin call in ' .. out.source)
     end
 
     -- convert args to a table
@@ -112,6 +131,54 @@ local function process_plugins(s, out)
     end
 
     return s
+end
+
+
+local function _process_content(s, item)
+    blocks = {}
+
+    -- First, extract any $raw$ blocks
+    local counter = 0
+    for block in s:gmatch('\n%$raw%$\n(.-)\n%$%/raw%$\n') do
+        blocks[counter] = block
+        counter = counter + 1
+    end
+    s = s:gsub('\n%$raw%$\n.-\n%$%/raw%$\n', '$raw$')
+
+    -- Set $=key's
+    s = s:gsub('%$=url', config.url)
+
+    -- Get $key=value's (and remove from string)
+    for k, v in s:gmatch('%$([%w]+)=(.-)\n') do
+        item[k] = v
+    end
+    s = s:gsub('%$[%w]+=.-\n', '')
+
+    -- Swap out XREFs
+    s = s:gsub('%[=(.-)%]', '[XREF=%1]')
+
+    -- Hande plugins
+    s = _process_plugins(s, item)
+
+    -- Excerpt
+    local start, _ = s:find('%-%-MORE%-%-', 1)
+
+    if start then
+        -- Extract the excerpt
+        item.excerpt = markdown(s:sub(0, start - 1))
+        -- Replace the --MORE--
+        local sep = config.more_separator or ''
+        s = s:gsub('%-%-MORE%-%-', '<a id="more">' .. sep .. '</a>')
+    end
+
+    -- Now we've processed internal extras, restore $raw$ blocks
+    local counter = 0
+    for block in s:gmatch('%$raw%$') do
+        s = s:gsub('%$raw%$', blocks[counter], counter + 1)
+        counter = counter + 1
+    end
+
+    item.content = markdown(s)
 end
 
 
@@ -156,29 +223,8 @@ local function load_markdowns(directory, template)
             local f = assert(io.open(file2, 'r'))
             local s = assert(f:read('*a'))
 
-            -- Set $=key's
-            s = s:gsub('%$=url', config.url)
-
-            -- Get $key=value's (and remove from string)
-            for k, v in s:gmatch('%$([%w]+)=(.-)\n') do
-                item[k] = v
-            end
-            s = s:gsub('%$[%w]+=.-\n', '')
-
-            -- Hande plugins
-            s = process_plugins(s, item)
-
-            -- Excerpt
-            local start, _ = s:find('--MORE--', 1, true)
-            if start then
-                -- Extract the excerpt
-                item.excerpt = markdown(s:sub(0, start - 1))
-                -- Replace the --MORE--
-                local sep = config.more_separator or ''
-                s = s:gsub('%-%-MORE%-%-', '<a id="more">' .. sep .. '</a>')
-            end
-
-            item.content = markdown(s)
+            -- Parse out internal extras and then markdown it
+            _process_content(s, item)
 
             -- Date set?
             if item.date then
@@ -187,7 +233,7 @@ local function load_markdowns(directory, template)
             end
 
             -- Insert to items
-        items[#items + 1] = item
+            items[#items + 1] = item
             if config.print then print('\t' .. item.title) end
         end
     end
@@ -208,9 +254,9 @@ local function load_templates()
             local tmpl_name = file:sub(0, -7)
             file = directory .. '/' .. file
             local f, err = io.open(file, 'r')
-            if not f then error(err) end
+            if not f then cli.error(err) end
             local s, err = f:read('*a')
-            if not s then error(err) end
+            if not s then cli.error(err) end
             f:close()
 
             templates[tmpl_name] = s
@@ -227,10 +273,10 @@ end
 local function copy_file(source, destination)
     -- Open current file
     local f, err = io.open(source, 'r')
-    if not f then error(err) end
+    if not f then cli.error(err) end
     -- Read file
     local s, err = f:read('*a')
-    if not s then error(err) end
+    if not s then cli.error(err) end
     f:close()
 
     -- Open new file for creation
@@ -239,7 +285,7 @@ local function copy_file(source, destination)
 
     -- Write contents
     local result, err = f:write(s)
-    if not result then error(err) end
+    if not result then cli.error(err) end
     f:close()
 
     print('\t' .. destination)
@@ -279,21 +325,28 @@ local function process_xref_1(fname, s, idx)
     local pos = 1
 
     while pos < #s do
-    local a, b = s:find('%[=(.-)%]', pos)
-    if not a then break end
-    local ref = s:sub(a + 2, b - 1)
-    local res = idx[ref]
-    if not res then
-        print(string.format("%s: Error: cross reference to %s not found.",
-        fname, ref))
-        res = "INVALID XREF"
-    else
-        res = string.format('<a href="%s/%s/%s">%s</a>',
-        config.url, res.directory, res.link, res.title)
-    end
+        local a, b = s:find('%[XREF=(.-)%]', pos)
+        if not a then break end
 
-    s = s:sub(1, a - 1) .. res .. s:sub(b + 1)
-    pos = a + #res
+        local ref = s:sub(a + 2, b - 1)
+        local res = idx[ref]
+
+        if not res then
+            print(string.format(
+                '%s: Error: cross reference to %s not found.',
+                fname, ref
+            ))
+
+            res = 'INVALID XREF'
+        else
+            res = string.format(
+                '<a href="%s/%s/%s">%s</a>',
+                config.url, res.directory, res.link, res.title
+            )
+        end
+
+        s = s:sub(1, a - 1) .. res .. s:sub(b + 1)
+        pos = a + #res
     end
 
     return s
@@ -313,24 +366,27 @@ local function process_xref(pages, posts)
     -- create an index (name to item)
     local idx = {}
     for _, item in ipairs(pages) do
-    idx['pages/' .. item.name] = item
+        idx['pages/' .. item.name] = item
     end
+
     for _, item in ipairs(posts) do
-    idx['posts/' .. item.name] = item
+        idx['posts/' .. item.name] = item
     end
 
     -- check all items for xrefs
     for _, item in ipairs(pages) do
-    item.content = process_xref_1(item.source, item.content, idx)
-    if item.excerpt then
-        item.excerpt = process_xref_1(item.source, item.excerpt, idx)
+        item.content = process_xref_1(item.source, item.content, idx)
+        if item.excerpt then
+            item.excerpt = process_xref_1(item.source, item.excerpt, idx)
+        end
     end
-    end
+
     for _, item in ipairs(posts) do
-    item.content = process_xref_1(item.source, item.content, idx)
+        item.content = process_xref_1(item.source, item.content, idx)
     end
 
 end
+
 
 -- Export
 return {
@@ -342,4 +398,5 @@ return {
     ensure_destination = ensure_destination,
     write_html = write_html,
     process_xref = process_xref,
+    escape_for_rss = escape_for_rss
 }
