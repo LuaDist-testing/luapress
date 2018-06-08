@@ -1,17 +1,17 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = 'Luapress'
-version = '3.0-0'
+version = '3.1-0'
 
 -- LuaDist source
 source = {
-  tag = "3.0-0",
+  tag = "3.1-0",
   url = "git://github.com/LuaDist-testing/luapress.git"
 }
 -- Original source
 -- source = {
 --     url = 'git://github.com/Fizzadar/Luapress.git',
---     tag = 'v3.0'
+--     tag = 'v3.1'
 -- }
 
 description = {
@@ -23,6 +23,7 @@ description = {
 dependencies = {
     'lua >= 5.1',
     'luafilesystem',
+    'lustache',
     'ansicolors'
 }
 

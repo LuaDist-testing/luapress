@@ -299,7 +299,13 @@ end
 -- @param root  directory where to set up the files
 -- @param url  relative URL of the site, i.e. https://host.com/URL
 --
-local function make_skeleton(root, url)
+local function make_skeleton(root, url, use_lhtml)
+    if use_lhtml then
+        template_type = 'lhtml'
+    else
+        template_type = 'mustache'
+    end
+
     -- Make directories
     for _, directory in ipairs({
         '', 'posts', 'pages', 'inc', 'templates', 'templates/default',
@@ -309,7 +315,7 @@ local function make_skeleton(root, url)
 
     -- Copy the default template
     local base = string.gsub(arg[0], "/[^/]-/[^/]-$", "")
-    util.copy_dir(base .. '/template/', root .. '/templates/default/')
+    util.copy_dir(base .. '/template/' .. template_type .. '/', root .. '/templates/default/')
 
     local attributes = lfs.attributes(root .. '/config.lua')
     if attributes then
